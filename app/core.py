@@ -11,7 +11,7 @@ import tiktoken
 from .config import settings
 from .metrics import COMPRESSION_SECONDS, PROVIDER_SECONDS
 
-_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;.!?])\s+|\n+")
+_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;.!?])\s*|\n+")
 _TASK_TERMS = {
     "customer_potential": ["购买", "预算", "报价", "价格", "上线", "需求", "供应商", "合同", "采购", "试用", "客户", "购买意向"],
     "kyc": ["身份", "姓名", "公司", "机构", "金额", "交易", "风险", "异常", "关系", "职业", "地址", "证件", "来源", "受益人"],
@@ -53,9 +53,12 @@ def split_chunks(text: str) -> list[Chunk]:
 
 
 def _hash_embedding(text: str, dimensions: int = 128) -> list[float]:
-    # Deterministic fallback; production can use a provider embedding endpoint.
+    # Character n-grams provide a deterministic, multilingual cache candidate index.
     vec = [0.0] * dimensions
-    for token in re.findall(r"[\w\u4e00-\u9fff]+", text.lower()):
+    compact = re.sub(r"\s+", "", text.lower())
+    tokens = [compact[i:i+3] for i in range(max(0, len(compact) - 2))]
+    tokens.extend(re.findall(r"[a-z0-9]+", text.lower()))
+    for token in tokens:
         h = int(hashlib.blake2b(token.encode(), digest_size=8).hexdigest(), 16)
         vec[h % dimensions] += 1.0 if h % 2 else -1.0
     norm = math.sqrt(sum(x * x for x in vec)) or 1.0
@@ -102,6 +105,12 @@ def compress_text(text: str, task_type: str, max_tokens: int, level: str) -> tup
     selected_ids = {c.chunk_id for c in selected}
     removed = [c for c in chunks if c.chunk_id not in selected_ids]
     output = "\n".join(c.text for c in selected)
+    if count_tokens(output) > max_tokens:
+        enc = tokenizer()
+        if enc:
+            output = enc.decode(enc.encode(output)[:max_tokens])
+        else:
+            output = output[: max_tokens * 4]
     COMPRESSION_SECONDS.labels(task_type).observe(perf_counter() - started)
     return output, selected, removed, count_tokens(output)
 
@@ -112,7 +121,11 @@ async def provider_call(task_type: str, text: str) -> dict:
     headers = {"Content-Type": "application/json"}
     if settings.upstream_api_key:
         headers["Authorization"] = f"Bearer {settings.upstream_api_key}"
-    payload = {"model": settings.upstream_model, "messages": [{"role": "user", "content": text}], "temperature": 0}
+    instructions = {
+        "customer_potential": "根据客户接触记录判断客户潜力。只依据提供的文本，简洁说明结论和证据；信息不足时说明不确定。",
+        "kyc": "根据接触记录提取 KYC 相关事实和风险线索。只依据提供的文本，区分事实与推测；信息不足时说明不确定。",
+    }
+    payload = {"model": settings.upstream_model, "messages": [{"role": "system", "content": instructions.get(task_type, "只依据提供的文本完成任务，简洁作答。")}, {"role": "user", "content": text}], "temperature": 0, "max_tokens": 300}
     started = perf_counter()
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(settings.upstream_base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload)

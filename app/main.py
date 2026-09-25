@@ -43,7 +43,8 @@ async def process(req: ProcessRequest):
     raw_tokens = count_tokens(raw)
     RAW_TOKENS.labels(task).inc(raw_tokens)
     max_tokens = req.max_input_tokens or settings.default_max_input_tokens
-    exact_key = cache.exact_key(task, raw, req.prompt_version, req.model_version)
+    model_version = f"{settings.upstream_base_url}|{settings.upstream_model}|{req.model_version}"
+    exact_key = cache.exact_key(task, raw, req.prompt_version, model_version)
     exact = await cache.get_exact(exact_key)
     if exact:
         CACHE_HITS.labels("exact", task).inc()
@@ -53,8 +54,9 @@ async def process(req: ProcessRequest):
     compressed, kept, removed, sent_tokens = compress_text(raw, task, max_tokens, req.compression_level)
     SENT_TOKENS.labels(task).inc(sent_tokens)
     SAVED_TOKENS.labels(task).inc(max(0, raw_tokens - sent_tokens))
-    direct_threshold = settings.semantic_direct_threshold if task != "kyc" else min(0.995, settings.semantic_direct_threshold + 0.015)
-    semantic = await cache.search_semantic(task, compressed, direct_threshold)
+    direct_threshold = settings.semantic_direct_threshold
+    semantic_namespace = f"{task}|{model_version}|{req.prompt_version}"
+    semantic = await cache.search_semantic(semantic_namespace, compressed, direct_threshold) if task == "customer_potential" and settings.upstream_base_url else None
     if semantic:
         result = semantic.get("result", {})
         response = {"result": result, "compressed_text": compressed, "evidence": {"kept": [c.chunk_id for c in kept], "removed": [c.chunk_id for c in removed]}, "usage": {"raw_input_tokens": raw_tokens, "sent_input_tokens": sent_tokens, "saved_input_tokens": max(0, raw_tokens - sent_tokens), "cache_hit": True, "cache_type": "semantic_direct"}}
@@ -64,8 +66,11 @@ async def process(req: ProcessRequest):
 
     provider = await provider_call(task, compressed)
     result = provider.get("choices", [{}])[0].get("message", {}).get("content", provider)
-    response = {"result": result, "compressed_text": compressed, "evidence": {"kept": [c.chunk_id for c in kept], "removed": [c.chunk_id for c in removed]}, "usage": {"raw_input_tokens": raw_tokens, "sent_input_tokens": sent_tokens, "saved_input_tokens": max(0, raw_tokens - sent_tokens), "cache_hit": False, "cache_type": None}}
-    await cache.put_exact(exact_key, response)
-    await cache.put_semantic(task, compressed, response)
+    provider_usage = provider.get("usage", {})
+    response = {"result": result, "compressed_text": compressed, "evidence": {"kept": [c.chunk_id for c in kept], "removed": [c.chunk_id for c in removed]}, "usage": {"raw_input_tokens": raw_tokens, "sent_input_tokens": sent_tokens, "saved_input_tokens": max(0, raw_tokens - sent_tokens), "provider_prompt_tokens": provider_usage.get("prompt_tokens"), "provider_completion_tokens": provider_usage.get("completion_tokens"), "provider_cache_hit_tokens": provider_usage.get("prompt_cache_hit_tokens"), "cache_hit": False, "cache_type": None}}
+    if settings.upstream_base_url:
+        await cache.put_exact(exact_key, response)
+        if task == "customer_potential":
+            await cache.put_semantic(semantic_namespace, compressed, result)
     REQUESTS.labels(task, "provider").inc()
     return response

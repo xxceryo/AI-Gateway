@@ -52,3 +52,9 @@ pytest -q
 ```
 
 This project intentionally separates raw evidence from the compressed prompt. The API response includes source chunk IDs so downstream systems can audit what was kept and removed.
+
+## Execution plan
+
+See [PLAN.md](PLAN.md) for phases, open-source reuse, and acceptance gates.
+
+The configured DeepSeek model is `deepseek-flash` (current official model name). The API key belongs only in the ignored `.env`. Provider-reported token usage is included in the response after an actual call.
