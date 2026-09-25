@@ -1,0 +1,14 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {"title":"Input tokens","type":"timeseries","gridPos":{"h":8,"w":12,"x":0,"y":0},"targets":[{"expr":"sum(rate(ai_gateway_raw_input_tokens_total[5m]))","legendFormat":"raw"},{"expr":"sum(rate(ai_gateway_sent_input_tokens_total[5m]))","legendFormat":"sent"}]},
+    {"title":"Cache hit rate","type":"timeseries","gridPos":{"h":8,"w":12,"x":12,"y":0},"targets":[{"expr":"sum(rate(ai_gateway_cache_hits_total[5m])) / sum(rate(ai_gateway_requests_total[5m]))","legendFormat":"hit rate"}]},
+    {"title":"Saved tokens","type":"stat","gridPos":{"h":6,"w":8,"x":0,"y":8},"targets":[{"expr":"sum(ai_gateway_saved_tokens_total)","legendFormat":"saved"}]},
+    {"title":"Requests by outcome","type":"timeseries","gridPos":{"h":8,"w":16,"x":8,"y":8},"targets":[{"expr":"sum by (status) (rate(ai_gateway_requests_total[5m]))","legendFormat":"{{status}}"}]}
+  ],
+  "schemaVersion": 39,
+  "title": "AI-Gateway Overview",
+  "time": {"from":"now-6h","to":"now"},
+  "version": 1
+}
